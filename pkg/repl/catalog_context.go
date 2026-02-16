@@ -174,11 +174,6 @@ func (ctx *CatalogContext) processCommand(input string) error {
 			channel = args[1]
 		}
 		return ctx.listVersions(args[0], channel)
-	case "bundle":
-		if len(args) < 2 {
-			return fmt.Errorf("'bundle' requires a package name and version")
-		}
-		return ctx.showBundle(args[0], args[1])
 	default:
 		return fmt.Errorf("unknown command: %s. Type 'help' for available commands", command)
 	}
@@ -198,7 +193,6 @@ func (ctx *CatalogContext) showCatalogHelp() error {
 	fmt.Println("  channels <name>            List all channels for a package")
 	fmt.Println("  bundles <name> [channel]   List all bundles for a package (or specific channel)")
 	fmt.Println("  versions <name> [channel]  List all versions for a package (or specific channel)")
-	fmt.Println("  bundle <name> <version>    Show detailed bundle information")
 	fmt.Println()
 	fmt.Println("  Other commands:")
 	fmt.Println("  info                       Show catalog information")
@@ -447,13 +441,10 @@ func (ctx *CatalogContext) setupCatalogCompletion() *readline.PrefixCompleter {
 		readline.PcItem("channels",
 			readline.PcItemDynamic(ctx.packageNamesCompleter),
 		),
-		readline.PcItem("bundles",
-			readline.PcItemDynamic(ctx.packageNamesCompleter),
-		),
 		readline.PcItem("versions",
 			readline.PcItemDynamic(ctx.packageNamesCompleter),
 		),
-		readline.PcItem("bundle",
+		readline.PcItem("bundles",
 			readline.PcItemDynamic(ctx.packageNamesCompleter),
 		),
 		readline.PcItem("info"),
@@ -763,6 +754,7 @@ func (ctx *CatalogContext) listVersions(packageName, channelFilter string) error
 	fmt.Printf("\nTotal versions: %d\n", len(versions))
 	return nil
 }
+
 
 // showBundle shows detailed information about a specific bundle
 func (ctx *CatalogContext) showBundle(packageName, version string) error {
