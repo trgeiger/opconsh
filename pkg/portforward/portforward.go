@@ -8,11 +8,11 @@ import (
 	"net/url"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // PortForwarder manages port forwarding to catalogd service
@@ -38,20 +38,25 @@ func NewPortForwarder(config *rest.Config, clientset *kubernetes.Clientset) *Por
 
 // Start begins port forwarding to catalogd service
 func (pf *PortForwarder) Start() error {
-	// First, find the catalogd pod
-	pods, err := pf.clientset.CoreV1().Pods("olmv1-system").List(pf.ctx, metav1.ListOptions{
+	// First, find the catalogd namespace and pod
+	catalogdNamespace, err := pf.findCatalogdNamespace()
+	if err != nil {
+		return fmt.Errorf("failed to find catalogd namespace: %w", err)
+	}
+
+	pods, err := pf.clientset.CoreV1().Pods(catalogdNamespace).List(pf.ctx, metav1.ListOptions{
 		LabelSelector: "app.kubernetes.io/name=catalogd",
 	})
 	if err != nil {
 		return fmt.Errorf("failed to list catalogd pods: %w", err)
 	}
-	
+
 	if len(pods.Items) == 0 {
-		return fmt.Errorf("no catalogd pods found in olmv1-system namespace")
+		return fmt.Errorf("no catalogd pods found in namespace %s", catalogdNamespace)
 	}
-	
+
 	podName := pods.Items[0].Name
-	
+
 	transport, upgrader, err := spdy.RoundTripperFor(pf.config)
 	if err != nil {
 		return fmt.Errorf("failed to create round tripper: %w", err)
@@ -61,10 +66,10 @@ func (pf *PortForwarder) Start() error {
 	if err != nil {
 		return fmt.Errorf("failed to parse server URL: %w", err)
 	}
-	
+
 	// Build port forward URL to the catalogd pod
 	portForwardURL := *serverURL
-	portForwardURL.Path = fmt.Sprintf("/api/v1/namespaces/olmv1-system/pods/%s/portforward", podName)
+	portForwardURL.Path = fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/portforward", catalogdNamespace, podName)
 
 	dialer := spdy.NewDialer(upgrader, &http.Client{Transport: transport}, http.MethodPost, &portForwardURL)
 
@@ -120,4 +125,62 @@ func (pf *PortForwarder) IsReady() bool {
 	default:
 		return false
 	}
+}
+
+// findCatalogdNamespace searches for the namespace containing catalogd deployment
+func (pf *PortForwarder) findCatalogdNamespace() (string, error) {
+	// Common catalogd namespaces to check, in order of preference
+	candidateNamespaces := []string{
+		"openshift-catalogd",         // OpenShift default
+		"olmv1-system",               // Upstream default
+		"operator-lifecycle-manager", // Alternative
+	}
+
+	// First, try the common namespaces
+	for _, ns := range candidateNamespaces {
+		pods, err := pf.clientset.CoreV1().Pods(ns).List(pf.ctx, metav1.ListOptions{
+			LabelSelector: "app.kubernetes.io/name=catalogd",
+		})
+		if err != nil {
+			// Namespace might not exist, continue checking
+			continue
+		}
+
+		if len(pods.Items) > 0 {
+			return ns, nil
+		}
+	}
+
+	// If not found in common namespaces, search all namespaces
+	namespaces, err := pf.clientset.CoreV1().Namespaces().List(pf.ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to list namespaces: %w", err)
+	}
+
+	for _, ns := range namespaces.Items {
+		// Skip namespaces we already checked
+		skip := false
+		for _, candidate := range candidateNamespaces {
+			if ns.Name == candidate {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+
+		pods, err := pf.clientset.CoreV1().Pods(ns.Name).List(pf.ctx, metav1.ListOptions{
+			LabelSelector: "app.kubernetes.io/name=catalogd",
+		})
+		if err != nil {
+			continue
+		}
+
+		if len(pods.Items) > 0 {
+			return ns.Name, nil
+		}
+	}
+
+	return "", fmt.Errorf("no catalogd pods found in any namespace")
 }

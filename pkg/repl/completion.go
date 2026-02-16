@@ -97,13 +97,13 @@ func (r *REPL) packageNamesCompleter(line string) []string {
 	}
 
 	catalogName := parts[2] // e.g., "catalogs package <catalogName> <packageName>"
-	
+
 	// Get the catalog to get its base URL
 	catalogs, err := r.cache.GetCatalogs(r)
 	if err != nil {
 		return nil
 	}
-	
+
 	var catalogBaseURL string
 	for _, catalog := range catalogs {
 		if catalog.Name == catalogName {
@@ -113,11 +113,11 @@ func (r *REPL) packageNamesCompleter(line string) []string {
 			break
 		}
 	}
-	
+
 	if catalogBaseURL == "" {
 		return nil
 	}
-	
+
 	packages, err := r.cache.GetPackages(r, catalogName, catalogBaseURL)
 	if err != nil {
 		return nil

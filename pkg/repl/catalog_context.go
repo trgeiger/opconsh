@@ -504,7 +504,7 @@ func (ctx *CatalogContext) getVersions(packageName string) []string {
 					}
 				}
 			}
-			
+
 			var versions []string
 			for version := range versionSet {
 				versions = append(versions, version)

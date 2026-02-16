@@ -14,7 +14,6 @@ import (
 
 var (
 	kubeconfig string
-	namespace  string
 )
 
 var rootCmd = &cobra.Command{
@@ -38,7 +37,6 @@ func Execute() error {
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&kubeconfig, "kubeconfig", "", "path to the kubeconfig file (uses standard kubectl precedence if not specified)")
-	rootCmd.PersistentFlags().StringVarP(&namespace, "namespace", "n", "", "kubernetes namespace (if applicable)")
 }
 
 func startREPL() error {
@@ -49,7 +47,7 @@ func startREPL() error {
 	}
 	configOverrides := &clientcmd.ConfigOverrides{}
 	kubeConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
-	
+
 	config, err := kubeConfig.ClientConfig()
 	if err != nil {
 		return fmt.Errorf("failed to build kubeconfig: %w", err)

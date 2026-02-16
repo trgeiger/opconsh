@@ -23,10 +23,10 @@ type CatalogdClient struct {
 
 // Package represents a package in a catalog
 type Package struct {
-	Name         string    `json:"name"`
-	DefaultChannel string  `json:"defaultChannel"`
-	Channels     []Channel `json:"channels"`
-	Icon         *Icon     `json:"icon,omitempty"` // Single icon, not array
+	Name           string    `json:"name"`
+	DefaultChannel string    `json:"defaultChannel"`
+	Channels       []Channel `json:"channels"`
+	Icon           *Icon     `json:"icon,omitempty"` // Single icon, not array
 }
 
 // Channel represents a channel in a package
@@ -37,13 +37,13 @@ type Channel struct {
 
 // Bundle represents a bundle in a channel
 type Bundle struct {
-	Name        string            `json:"name"`
-	Version     string            `json:"version"`
-	Image       string            `json:"image"`
-	Description string            `json:"description"`
-	DisplayName string            `json:"displayName,omitempty"`
-	Properties  []json.RawMessage `json:"properties,omitempty"`
-	RelatedImages []RelatedImage  `json:"relatedImages,omitempty"`
+	Name          string            `json:"name"`
+	Version       string            `json:"version"`
+	Image         string            `json:"image"`
+	Description   string            `json:"description"`
+	DisplayName   string            `json:"displayName,omitempty"`
+	Properties    []json.RawMessage `json:"properties,omitempty"`
+	RelatedImages []RelatedImage    `json:"relatedImages,omitempty"`
 }
 
 // RelatedImage represents an image referenced by a bundle
@@ -85,11 +85,10 @@ func (c *CatalogdClient) GetPackages(ctx context.Context, catalogName string, ca
 	if err != nil {
 		return nil, fmt.Errorf("failed to transform URL: %w", err)
 	}
-	
+
 	// Use the transformed URL and append the API path
 	apiURL := fmt.Sprintf("%s/api/v1/all", finalURL)
-	
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -97,7 +96,7 @@ func (c *CatalogdClient) GetPackages(ctx context.Context, catalogName string, ca
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to make request to %s: %w\n\nHint: Make sure you have port-forwarded the catalogd service:\n  kubectl -n olmv1-system port-forward svc/catalogd-service 8080:443", apiURL, err)
+		return nil, fmt.Errorf("failed to make request to %s: %w\n\nHint: Make sure you have port-forwarded the catalogd service:\n  kubectl port-forward svc/catalogd-service 8080:443 -n <catalogd-namespace>\n  (catalogd-namespace is typically 'olmv1-system' or 'openshift-catalogd')", apiURL, err)
 	}
 	defer resp.Body.Close()
 
@@ -110,22 +109,22 @@ func (c *CatalogdClient) GetPackages(ctx context.Context, catalogName string, ca
 	// We need to parse them and extract packages, channels, and bundles to build complete package info
 	var packages []Package
 	packageMap := make(map[string]*Package)
-	channelMap := make(map[string][]Channel)  // package name -> channels
+	channelMap := make(map[string][]Channel) // package name -> channels
 	bundleMap := make(map[string][]Bundle)   // package name -> bundles
 	decoder := json.NewDecoder(resp.Body)
-	
+
 	// First pass: collect all packages, channels, and bundles
 	for decoder.More() {
 		var item map[string]interface{}
 		if err := decoder.Decode(&item); err != nil {
 			return nil, fmt.Errorf("failed to decode response item: %w", err)
 		}
-		
+
 		schema, ok := item["schema"].(string)
 		if !ok {
 			continue
 		}
-		
+
 		switch schema {
 		case "olm.package":
 			// Convert back to JSON and then to Package struct
@@ -133,60 +132,60 @@ func (c *CatalogdClient) GetPackages(ctx context.Context, catalogName string, ca
 			if err != nil {
 				continue
 			}
-			
+
 			var pkg Package
 			if err := json.Unmarshal(jsonBytes, &pkg); err != nil {
 				continue
 			}
-			
+
 			packageMap[pkg.Name] = &pkg
-			
+
 		case "olm.channel":
 			if pkgName, ok := item["package"].(string); ok {
 				jsonBytes, err := json.Marshal(item)
 				if err != nil {
 					continue
 				}
-				
+
 				var channel Channel
 				if err := json.Unmarshal(jsonBytes, &channel); err != nil {
 					continue
 				}
-				
+
 				channelMap[pkgName] = append(channelMap[pkgName], channel)
 			}
-			
+
 		case "olm.bundle":
 			if pkgName, ok := item["package"].(string); ok {
 				jsonBytes, err := json.Marshal(item)
 				if err != nil {
 					continue
 				}
-				
+
 				var bundle Bundle
 				if err := json.Unmarshal(jsonBytes, &bundle); err != nil {
 					continue
 				}
-				
+
 				// Extract description, display name, and version from properties
 				bundle.Description, bundle.DisplayName, bundle.Version = extractFromProperties(bundle.Properties)
-				
+
 				bundleMap[pkgName] = append(bundleMap[pkgName], bundle)
 			}
 		}
 	}
-	
+
 	// Second pass: associate bundles with channels based on channel entries
 	for pkgName, channels := range channelMap {
 		pkg, exists := packageMap[pkgName]
 		if !exists {
 			continue
 		}
-		
+
 		// For each channel, populate its entries with matching bundles
 		for i, channel := range channels {
 			var channelBundles []Bundle
-			
+
 			// Channels define which bundles they contain via "entries" array with bundle names
 			for _, entry := range channel.Entries {
 				// Find the matching bundle from our bundle map
@@ -199,18 +198,18 @@ func (c *CatalogdClient) GetPackages(ctx context.Context, catalogName string, ca
 					}
 				}
 			}
-			
+
 			channels[i].Entries = channelBundles
 		}
-		
+
 		pkg.Channels = channels
 	}
-	
+
 	// Convert map to slice and sort alphabetically
 	for _, pkg := range packageMap {
 		packages = append(packages, *pkg)
 	}
-	
+
 	// Sort packages alphabetically by name
 	sort.Slice(packages, func(i, j int) bool {
 		return packages[i].Name < packages[j].Name
@@ -294,45 +293,45 @@ func (c *CatalogdClient) transformURLForLocal(clusterURL string) (string, error)
 // extractFromProperties extracts description, displayName, and version from bundle properties
 func extractFromProperties(properties []json.RawMessage) (string, string, string) {
 	var description, displayName, version string
-	
+
 	for _, prop := range properties {
 		var property map[string]interface{}
 		if err := json.Unmarshal(prop, &property); err != nil {
 			continue
 		}
-		
+
 		propType, ok := property["type"].(string)
 		if !ok {
 			continue
 		}
-		
+
 		if propType == "olm.csv.metadata" {
 			value, ok := property["value"].(map[string]interface{})
 			if !ok {
 				continue
 			}
-			
+
 			if desc, ok := value["description"].(string); ok {
 				description = desc
 			}
-			
+
 			if name, ok := value["displayName"].(string); ok {
 				displayName = name
 			}
 		}
-		
+
 		if propType == "olm.package" {
 			value, ok := property["value"].(map[string]interface{})
 			if !ok {
 				continue
 			}
-			
+
 			if ver, ok := value["version"].(string); ok {
 				version = ver
 			}
 		}
 	}
-	
+
 	return description, displayName, version
 }
 
@@ -340,7 +339,7 @@ func extractFromProperties(properties []json.RawMessage) (string, string, string
 func FindBestDescription(pkg *Package) (string, string) {
 	var bestDescription, bestDisplayName string
 	bestDescLength := 0
-	
+
 	// Helper function to check a bundle and update best if it's better
 	checkBundle := func(bundle Bundle) {
 		if len(bundle.Description) > bestDescLength {
@@ -349,7 +348,7 @@ func FindBestDescription(pkg *Package) (string, string) {
 			bestDescLength = len(bundle.Description)
 		}
 	}
-	
+
 	// First priority: check default channel bundles
 	for _, channel := range pkg.Channels {
 		if channel.Name == pkg.DefaultChannel {
@@ -363,7 +362,7 @@ func FindBestDescription(pkg *Package) (string, string) {
 			break
 		}
 	}
-	
+
 	// Second priority: check all other channels if we don't have a good description
 	if bestDescLength < 100 {
 		for _, channel := range pkg.Channels {
@@ -374,7 +373,7 @@ func FindBestDescription(pkg *Package) (string, string) {
 			}
 		}
 	}
-	
+
 	// Return best found, or fallback message
 	if bestDescription == "" {
 		return "No description available", ""

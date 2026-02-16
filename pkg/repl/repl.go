@@ -46,12 +46,12 @@ func (r *REPL) Start() error {
 	// Set up readline with tab completion and proper history support
 	completer := r.setupCompletion()
 	rl, err := readline.NewEx(&readline.Config{
-		Prompt:         "opconsh> ",
-		AutoComplete:   completer,
-		HistoryFile:    "/tmp/.opconsh_history",
-		HistoryLimit:   1000,
+		Prompt:                 "opconsh> ",
+		AutoComplete:           completer,
+		HistoryFile:            "/tmp/.opconsh_history",
+		HistoryLimit:           1000,
 		DisableAutoSaveHistory: false,
-		VimMode:        false, // Ensure we're in emacs mode for standard arrow key support
+		VimMode:                false, // Ensure we're in emacs mode for standard arrow key support
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create readline: %w", err)
@@ -146,7 +146,7 @@ func (r *REPL) showHelp() error {
 // showStatus displays cluster connection and OLM status
 func (r *REPL) showStatus() error {
 	fmt.Println("Cluster Status:")
-	
+
 	// Check cluster connection
 	version, err := r.k8sClient.Discovery().ServerVersion()
 	if err != nil {
@@ -356,7 +356,7 @@ func (r *REPL) listPackagesInCatalog(catalogName string) error {
 		if len(displayName) > 48 {
 			displayName = displayName[:45] + "..."
 		}
-		
+
 		// Truncate default channel if too long
 		displayChannel := pkg.DefaultChannel
 		if len(displayChannel) > 18 {
@@ -398,8 +398,7 @@ func (r *REPL) getPackageDetails(catalogName, packageName string) error {
 
 	fmt.Printf("Name:            %s\n", pkg.Name)
 	fmt.Printf("Default Channel: %s\n", pkg.DefaultChannel)
-	
-	
+
 	if len(pkg.Channels) > 0 {
 		fmt.Printf("\nChannels (%d):\n", len(pkg.Channels))
 		for _, channel := range pkg.Channels {
@@ -451,7 +450,7 @@ func (r *REPL) searchPackages(catalogName, searchTerm string) error {
 		if len(displayName) > 48 {
 			displayName = displayName[:45] + "..."
 		}
-		
+
 		// Truncate default channel if too long
 		displayChannel := pkg.DefaultChannel
 		if len(displayChannel) > 18 {
@@ -534,7 +533,7 @@ func (r *REPL) getExtension(name string) error {
 	}
 
 	fmt.Printf("ClusterExtension: %s\n\n", extension.Name)
-	
+
 	if extension.Spec.Source.Catalog != nil {
 		fmt.Printf("Package:         %s\n", extension.Spec.Source.Catalog.PackageName)
 		if extension.Spec.Source.Catalog.Version != "" {

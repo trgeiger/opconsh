@@ -11,17 +11,17 @@ import (
 // Cache holds cached completion data to avoid API calls on every tab press
 type Cache struct {
 	mu sync.RWMutex
-	
+
 	// Cached data
 	catalogs   []olmv1.ClusterCatalog
 	extensions []olmv1.ClusterExtension
 	packages   map[string][]client.Package // catalog name -> packages
-	
+
 	// Cache timestamps
 	catalogsUpdated   time.Time
 	extensionsUpdated time.Time
 	packagesUpdated   map[string]time.Time // catalog name -> timestamp
-	
+
 	// Cache TTL
 	ttl time.Duration
 }
@@ -113,7 +113,7 @@ func (c *Cache) GetPackages(r *REPL, catalogName, catalogBaseURL string) ([]clie
 func (c *Cache) InvalidateAll() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	c.catalogs = nil
 	c.extensions = nil
 	c.packages = make(map[string][]client.Package)
