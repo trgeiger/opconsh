@@ -12,6 +12,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/operator-framework/opconsh/pkg/client"
+	"github.com/operator-framework/opconsh/pkg/portforward"
 )
 
 // REPL represents the interactive Read-Eval-Print-Loop
@@ -22,6 +23,7 @@ type REPL struct {
 	config         *rest.Config
 	ctx            context.Context
 	cache          *Cache
+	portForward    *portforward.PortForwarder // For non-interactive package commands
 }
 
 // New creates a new REPL instance
@@ -82,6 +84,11 @@ func (r *REPL) Start() error {
 			fmt.Printf("Error: %v\n", err)
 		}
 	}
+}
+
+// ProcessCommand handles the execution of commands (exported for non-interactive use)
+func (r *REPL) ProcessCommand(input string) error {
+	return r.processCommand(input)
 }
 
 // processCommand handles the execution of commands
@@ -320,10 +327,36 @@ func (r *REPL) getCatalog(name string) error {
 	return nil
 }
 
+// setupPortForwardIfNeeded sets up port forwarding for catalogd if not already done
+func (r *REPL) setupPortForwardIfNeeded() error {
+	if r.portForward != nil {
+		return nil // Already set up
+	}
+
+	r.portForward = portforward.NewPortForwarder(r.config, r.k8sClient)
+	if err := r.portForward.Start(); err != nil {
+		return fmt.Errorf("failed to start port forwarding: %w", err)
+	}
+	return nil
+}
+
+// CleanupPortForward stops port forwarding if it was set up (exported for cleanup)
+func (r *REPL) CleanupPortForward() {
+	if r.portForward != nil {
+		r.portForward.Stop()
+		r.portForward = nil
+	}
+}
+
 // listPackagesInCatalog lists packages available in a specific catalog
 func (r *REPL) listPackagesInCatalog(catalogName string) error {
 	fmt.Printf("Packages in catalog '%s':\n", catalogName)
 	fmt.Println("Querying catalogd service...")
+	
+	// Set up port forwarding if needed for non-interactive use
+	if err := r.setupPortForwardIfNeeded(); err != nil {
+		return err
+	}
 	fmt.Println()
 
 	// Get the catalog to get its base URL
@@ -336,7 +369,13 @@ func (r *REPL) listPackagesInCatalog(catalogName string) error {
 		return fmt.Errorf("catalog %s has no status URLs - catalog may not be ready", catalogName)
 	}
 
-	packages, err := r.catalogdClient.GetPackages(r.ctx, catalogName, catalog.Status.URLs.Base)
+	// Use port-forwarded URL if available
+	baseURL := catalog.Status.URLs.Base
+	if r.portForward != nil {
+		baseURL = r.portForward.GetLocalURL() + "/catalogs/" + catalogName
+	}
+
+	packages, err := r.catalogdClient.GetPackages(r.ctx, catalogName, baseURL)
 	if err != nil {
 		return fmt.Errorf("failed to get packages from catalog: %w", err)
 	}
@@ -379,6 +418,11 @@ func (r *REPL) listPackagesInCatalog(catalogName string) error {
 func (r *REPL) getPackageDetails(catalogName, packageName string) error {
 	fmt.Printf("Package details for '%s' in catalog '%s':\n", packageName, catalogName)
 	fmt.Println("Querying catalogd service...")
+	
+	// Set up port forwarding if needed for non-interactive use
+	if err := r.setupPortForwardIfNeeded(); err != nil {
+		return err
+	}
 	fmt.Println()
 
 	// Get the catalog to get its base URL
@@ -391,7 +435,13 @@ func (r *REPL) getPackageDetails(catalogName, packageName string) error {
 		return fmt.Errorf("catalog %s has no status URLs - catalog may not be ready", catalogName)
 	}
 
-	pkg, err := r.catalogdClient.GetPackage(r.ctx, catalogName, packageName, catalog.Status.URLs.Base)
+	// Use port-forwarded URL if available
+	baseURL := catalog.Status.URLs.Base
+	if r.portForward != nil {
+		baseURL = r.portForward.GetLocalURL() + "/catalogs/" + catalogName
+	}
+
+	pkg, err := r.catalogdClient.GetPackage(r.ctx, catalogName, packageName, baseURL)
 	if err != nil {
 		return fmt.Errorf("failed to get package details: %w", err)
 	}
@@ -418,6 +468,11 @@ func (r *REPL) getPackageDetails(catalogName, packageName string) error {
 func (r *REPL) searchPackages(catalogName, searchTerm string) error {
 	fmt.Printf("Searching for '%s' in catalog '%s':\n", searchTerm, catalogName)
 	fmt.Println("Querying catalogd service...")
+	
+	// Set up port forwarding if needed for non-interactive use
+	if err := r.setupPortForwardIfNeeded(); err != nil {
+		return err
+	}
 	fmt.Println()
 
 	// Get the catalog to get its base URL
@@ -430,7 +485,13 @@ func (r *REPL) searchPackages(catalogName, searchTerm string) error {
 		return fmt.Errorf("catalog %s has no status URLs - catalog may not be ready", catalogName)
 	}
 
-	packages, err := r.catalogdClient.SearchPackages(r.ctx, catalogName, searchTerm, catalog.Status.URLs.Base)
+	// Use port-forwarded URL if available
+	baseURL := catalog.Status.URLs.Base
+	if r.portForward != nil {
+		baseURL = r.portForward.GetLocalURL() + "/catalogs/" + catalogName
+	}
+
+	packages, err := r.catalogdClient.SearchPackages(r.ctx, catalogName, searchTerm, baseURL)
 	if err != nil {
 		return fmt.Errorf("failed to search packages: %w", err)
 	}
