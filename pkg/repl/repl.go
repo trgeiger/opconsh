@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chzyer/readline"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -123,6 +124,8 @@ func (r *REPL) processCommand(input string) error {
 			return fmt.Errorf("'enter' requires a catalog name")
 		}
 		return r.EnterCatalogContext(args[0])
+	case "diagnose":
+		return r.handleDiagnoseCommands(args)
 	default:
 		return fmt.Errorf("unknown command: %s. Type 'help' for available commands", command)
 	}
@@ -146,6 +149,10 @@ func (r *REPL) showHelp() error {
 	fmt.Println("    list                     List all ClusterExtensions")
 	fmt.Println("    get <name>              Get specific ClusterExtension details")
 	fmt.Println()
+	fmt.Println("  diagnose                   Troubleshoot OLM resources")
+	fmt.Println("    catalog <name>          Diagnose ClusterCatalog issues")
+	fmt.Println("    extension <name>        Diagnose ClusterExtension issues")
+	fmt.Println()
 	fmt.Println("  status                     Show detailed cluster connection and OLM status")
 	fmt.Println("  refresh                    Refresh cached completion data")
 	fmt.Println("  clear                      Clear the screen")
@@ -161,7 +168,7 @@ func (r *REPL) showStatus() error {
 	// Get kubeconfig context information
 	rawConfig, err := r.kubeConfig.RawConfig()
 	if err != nil {
-		fmt.Printf("  ✗ Kubeconfig: Unable to read config (%v)\n", err)
+		fmt.Printf("  [!] Kubeconfig: Unable to read config (%v)\n", err)
 	} else {
 		currentContext := rawConfig.CurrentContext
 		if currentContext == "" {
@@ -177,30 +184,30 @@ func (r *REPL) showStatus() error {
 			}
 		}
 
-		fmt.Printf("  ✓ Kubeconfig: %s (context: %s)\n", kubeconfigPath, currentContext)
+		fmt.Printf("  [+] Kubeconfig: %s (context: %s)\n", kubeconfigPath, currentContext)
 
 		// Show current namespace if set
 		namespace, _, err := r.kubeConfig.Namespace()
 		if err == nil && namespace != "" {
-			fmt.Printf("  ✓ Namespace: %s\n", namespace)
+			fmt.Printf("  [+] Namespace: %s\n", namespace)
 		}
 	}
 
 	// Check API server connectivity and version
 	version, err := r.k8sClient.Discovery().ServerVersion()
 	if err != nil {
-		fmt.Printf("  ✗ API Server: Failed to connect (%v)\n", err)
+		fmt.Printf("  [!] API Server: Failed to connect (%v)\n", err)
 		return err
 	}
 
-	fmt.Printf("  ✓ API Server: %s (Kubernetes %s)\n", r.config.Host, version.GitVersion)
+	fmt.Printf("  [+] API Server: %s (Kubernetes %s)\n", r.config.Host, version.GitVersion)
 
 	// Test user permissions by trying to list namespaces
 	namespaces, err := r.k8sClient.CoreV1().Namespaces().List(r.ctx, metav1.ListOptions{Limit: 1})
 	if err != nil {
-		fmt.Printf("  ⚠ Permissions: Limited access (%v)\n", err)
+		fmt.Printf("  [?] Permissions: Limited access (%v)\n", err)
 	} else {
-		fmt.Printf("  ✓ Permissions: Can list cluster resources (%d namespaces)\n", len(namespaces.Items))
+		fmt.Printf("  [+] Permissions: Can list cluster resources (%d namespaces)\n", len(namespaces.Items))
 	}
 
 	fmt.Println()
@@ -209,16 +216,16 @@ func (r *REPL) showStatus() error {
 	// Check catalogd availability
 	catalogdNamespace, err := r.findCatalogdNamespace()
 	if err != nil {
-		fmt.Printf("  ✗ Catalogd: Not found (%v)\n", err)
+		fmt.Printf("  [!] Catalogd: Not found (%v)\n", err)
 	} else {
 		// Check catalogd pods
 		pods, err := r.k8sClient.CoreV1().Pods(catalogdNamespace).List(r.ctx, metav1.ListOptions{
 			LabelSelector: "app.kubernetes.io/name=catalogd",
 		})
 		if err != nil {
-			fmt.Printf("  ✗ Catalogd: Error checking pods in %s (%v)\n", catalogdNamespace, err)
+			fmt.Printf("  [!] Catalogd: Error checking pods in %s (%v)\n", catalogdNamespace, err)
 		} else if len(pods.Items) == 0 {
-			fmt.Printf("  ✗ Catalogd: No pods found in %s\n", catalogdNamespace)
+			fmt.Printf("  [!] Catalogd: No pods found in %s\n", catalogdNamespace)
 		} else {
 			readyPods := 0
 			for _, pod := range pods.Items {
@@ -230,9 +237,9 @@ func (r *REPL) showStatus() error {
 				}
 			}
 			if readyPods == 0 {
-				fmt.Printf("  ⚠ Catalogd: %d pod(s) in %s, none ready\n", len(pods.Items), catalogdNamespace)
+				fmt.Printf("  [?] Catalogd: %d pod(s) in %s, none ready\n", len(pods.Items), catalogdNamespace)
 			} else {
-				fmt.Printf("  ✓ Catalogd: %d/%d pod(s) ready in %s\n", readyPods, len(pods.Items), catalogdNamespace)
+				fmt.Printf("  [+] Catalogd: %d/%d pod(s) ready in %s\n", readyPods, len(pods.Items), catalogdNamespace)
 			}
 		}
 	}
@@ -240,16 +247,16 @@ func (r *REPL) showStatus() error {
 	// Check operator-controller availability
 	operatorControllerNamespace, err := r.findOperatorControllerNamespace()
 	if err != nil {
-		fmt.Printf("  ✗ Operator Controller: Not found (%v)\n", err)
+		fmt.Printf("  [!] Operator Controller: Not found (%v)\n", err)
 	} else {
 		// Check operator-controller pods
 		pods, err := r.k8sClient.CoreV1().Pods(operatorControllerNamespace).List(r.ctx, metav1.ListOptions{
 			LabelSelector: "app.kubernetes.io/name=operator-controller",
 		})
 		if err != nil {
-			fmt.Printf("  ✗ Operator Controller: Error checking pods in %s (%v)\n", operatorControllerNamespace, err)
+			fmt.Printf("  [!] Operator Controller: Error checking pods in %s (%v)\n", operatorControllerNamespace, err)
 		} else if len(pods.Items) == 0 {
-			fmt.Printf("  ✗ Operator Controller: No pods found in %s\n", operatorControllerNamespace)
+			fmt.Printf("  [!] Operator Controller: No pods found in %s\n", operatorControllerNamespace)
 		} else {
 			readyPods := 0
 			for _, pod := range pods.Items {
@@ -261,9 +268,9 @@ func (r *REPL) showStatus() error {
 				}
 			}
 			if readyPods == 0 {
-				fmt.Printf("  ⚠ Operator Controller: %d pod(s) in %s, none ready\n", len(pods.Items), operatorControllerNamespace)
+				fmt.Printf("  [?] Operator Controller: %d pod(s) in %s, none ready\n", len(pods.Items), operatorControllerNamespace)
 			} else {
-				fmt.Printf("  ✓ Operator Controller: %d/%d pod(s) ready in %s\n", readyPods, len(pods.Items), operatorControllerNamespace)
+				fmt.Printf("  [+] Operator Controller: %d/%d pod(s) ready in %s\n", readyPods, len(pods.Items), operatorControllerNamespace)
 			}
 		}
 	}
@@ -271,7 +278,7 @@ func (r *REPL) showStatus() error {
 	// Check ClusterCatalogs with detailed error reporting
 	catalogs, err := r.olmClient.GetClusterCatalogs(r.ctx)
 	if err != nil {
-		fmt.Printf("  ✗ ClusterCatalogs: Unable to access (%v)\n", err)
+		fmt.Printf("  [!] ClusterCatalogs: Unable to access (%v)\n", err)
 	} else {
 		availableCount := 0
 		errorCount := 0
@@ -291,16 +298,16 @@ func (r *REPL) showStatus() error {
 		}
 
 		if errorCount > 0 {
-			fmt.Printf("  ⚠ ClusterCatalogs: %d available, %d with errors\n", availableCount, errorCount)
+			fmt.Printf("  [?] ClusterCatalogs: %d available, %d with errors\n", availableCount, errorCount)
 		} else {
-			fmt.Printf("  ✓ ClusterCatalogs: %d available\n", len(catalogs))
+			fmt.Printf("  [+] ClusterCatalogs: %d available\n", len(catalogs))
 		}
 	}
 
 	// Check ClusterExtensions with detailed status
 	extensions, err := r.olmClient.GetClusterExtensions(r.ctx)
 	if err != nil {
-		fmt.Printf("  ✗ ClusterExtensions: Unable to access (%v)\n", err)
+		fmt.Printf("  [!] ClusterExtensions: Unable to access (%v)\n", err)
 	} else {
 		installedCount := 0
 		failedCount := 0
@@ -322,11 +329,317 @@ func (r *REPL) showStatus() error {
 		}
 
 		if failedCount > 0 {
-			fmt.Printf("  ⚠ ClusterExtensions: %d installed, %d failed\n", installedCount, failedCount)
+			fmt.Printf("  [?] ClusterExtensions: %d installed, %d failed\n", installedCount, failedCount)
 		} else {
-			fmt.Printf("  ✓ ClusterExtensions: %d installed\n", len(extensions))
+			fmt.Printf("  [+] ClusterExtensions: %d installed\n", len(extensions))
 		}
 	}
+
+	return nil
+}
+
+// diagnoseCatalog provides detailed troubleshooting information for a ClusterCatalog
+func (r *REPL) diagnoseCatalog(name string) error {
+	fmt.Printf("Diagnosing ClusterCatalog '%s'...\n\n", name)
+
+	// Get the catalog
+	catalog, err := r.olmClient.GetClusterCatalog(r.ctx, name)
+	if err != nil {
+		return fmt.Errorf("failed to get ClusterCatalog '%s': %w", name, err)
+	}
+
+	// Basic information
+	fmt.Printf("Basic Information:\n")
+	fmt.Printf("  Name:         %s\n", catalog.Name)
+	fmt.Printf("  Created:      %s\n", catalog.CreationTimestamp.Format("2006-01-02 15:04:05"))
+	fmt.Printf("  Source Type:  %s\n", catalog.Spec.Source.Type)
+	if catalog.Spec.Source.Image != nil {
+		fmt.Printf("  Source Image: %s\n", catalog.Spec.Source.Image.Ref)
+	}
+	fmt.Println()
+
+	// Analyze conditions
+	fmt.Printf("Status Analysis:\n")
+	if len(catalog.Status.Conditions) == 0 {
+		fmt.Printf("  [?] No status conditions found - catalog may be initializing\n")
+	} else {
+		hasServing := false
+		for _, condition := range catalog.Status.Conditions {
+			status := "[!]"
+			if condition.Status == "True" {
+				status = "[+]"
+			} else if condition.Status == "Unknown" {
+				status = "?"
+			}
+
+			fmt.Printf("  %s %s: %s\n", status, condition.Type, condition.Status)
+			if condition.Reason != "" {
+				fmt.Printf("    Reason: %s\n", condition.Reason)
+			}
+			if condition.Message != "" {
+				fmt.Printf("    Message: %s\n", condition.Message)
+			}
+			if condition.LastTransitionTime.Time.After(catalog.CreationTimestamp.Time) {
+				fmt.Printf("    Last Updated: %s\n", condition.LastTransitionTime.Format("2006-01-02 15:04:05"))
+			}
+
+			if condition.Type == "Serving" {
+				hasServing = true
+			}
+		}
+
+		if !hasServing {
+			fmt.Printf("  [?] No 'Serving' condition found - catalog may still be processing\n")
+		}
+	}
+	fmt.Println()
+
+	// Check URLs
+	if catalog.Status.URLs != nil {
+		fmt.Printf("Service URLs:\n")
+		fmt.Printf("  Base URL: %s\n", catalog.Status.URLs.Base)
+		fmt.Println()
+	} else {
+		fmt.Printf("Service URLs:\n")
+		fmt.Printf("  [!] No URLs available - catalog is not ready\n")
+		fmt.Println()
+	}
+
+	// Check related events
+	if err := r.checkResourceEvents("ClusterCatalog", name, ""); err != nil {
+		fmt.Printf("Events: Unable to fetch (%v)\n", err)
+	}
+
+	// Check catalogd status
+	fmt.Printf("Catalogd Status:\n")
+	catalogdNamespace, err := r.findCatalogdNamespace()
+	if err != nil {
+		fmt.Printf("  [!] Catalogd not found: %v\n", err)
+	} else {
+		pods, err := r.k8sClient.CoreV1().Pods(catalogdNamespace).List(r.ctx, metav1.ListOptions{
+			LabelSelector: "app.kubernetes.io/name=catalogd",
+		})
+		if err != nil {
+			fmt.Printf("  [!] Error checking catalogd pods: %v\n", err)
+		} else if len(pods.Items) == 0 {
+			fmt.Printf("  [!] No catalogd pods found in %s\n", catalogdNamespace)
+		} else {
+			readyPods := 0
+			for _, pod := range pods.Items {
+				for _, condition := range pod.Status.Conditions {
+					if condition.Type == "Ready" && condition.Status == "True" {
+						readyPods++
+						break
+					}
+				}
+			}
+			if readyPods == 0 {
+				fmt.Printf("  [!] Catalogd pods exist but none are ready (%d pods in %s)\n", len(pods.Items), catalogdNamespace)
+			} else {
+				fmt.Printf("  [+] Catalogd is healthy (%d/%d pods ready in %s)\n", readyPods, len(pods.Items), catalogdNamespace)
+			}
+		}
+	}
+
+
+	return nil
+}
+
+// diagnoseExtension provides detailed troubleshooting information for a ClusterExtension
+func (r *REPL) diagnoseExtension(name string) error {
+	fmt.Printf("Diagnosing ClusterExtension '%s'...\n\n", name)
+
+	// Get the extension
+	extension, err := r.olmClient.GetClusterExtension(r.ctx, name)
+	if err != nil {
+		return fmt.Errorf("failed to get ClusterExtension '%s': %w", name, err)
+	}
+
+	// Basic information
+	fmt.Printf("Basic Information:\n")
+	fmt.Printf("  Name:     %s\n", extension.Name)
+	fmt.Printf("  Created:  %s\n", extension.CreationTimestamp.Format("2006-01-02 15:04:05"))
+
+	if extension.Spec.Source.Catalog != nil {
+		fmt.Printf("  Package:  %s\n", extension.Spec.Source.Catalog.PackageName)
+		if extension.Spec.Source.Catalog.Version != "" {
+			fmt.Printf("  Version:  %s\n", extension.Spec.Source.Catalog.Version)
+		}
+		if len(extension.Spec.Source.Catalog.Channels) > 0 {
+			fmt.Printf("  Channels: %s\n", strings.Join(extension.Spec.Source.Catalog.Channels, ", "))
+		}
+	}
+	fmt.Println()
+
+	// Analyze conditions
+	fmt.Printf("Status Analysis:\n")
+	if len(extension.Status.Conditions) == 0 {
+		fmt.Printf("  [?] No status conditions found - extension may be initializing\n")
+	} else {
+		hasInstalled := false
+		for _, condition := range extension.Status.Conditions {
+			status := "[!]"
+			if condition.Status == "True" {
+				status = "[+]"
+			} else if condition.Status == "Unknown" {
+				status = "?"
+			}
+
+			fmt.Printf("  %s %s: %s\n", status, condition.Type, condition.Status)
+			if condition.Reason != "" {
+				fmt.Printf("    Reason: %s\n", condition.Reason)
+			}
+			if condition.Message != "" {
+				fmt.Printf("    Message: %s\n", condition.Message)
+			}
+			if condition.LastTransitionTime.Time.After(extension.CreationTimestamp.Time) {
+				fmt.Printf("    Last Updated: %s\n", condition.LastTransitionTime.Format("2006-01-02 15:04:05"))
+			}
+
+			if condition.Type == "Installed" {
+				hasInstalled = true
+			}
+		}
+
+		if !hasInstalled {
+			fmt.Printf("  [?] No 'Installed' condition found - extension may still be processing\n")
+		}
+	}
+	fmt.Println()
+
+	// Show installed bundle information
+	if extension.Status.Install != nil {
+		fmt.Printf("Installed Bundle:\n")
+		fmt.Printf("  Name:    %s\n", extension.Status.Install.Bundle.Name)
+		fmt.Printf("  Version: %s\n", extension.Status.Install.Bundle.Version)
+		fmt.Println()
+	} else {
+		fmt.Printf("Installed Bundle:\n")
+		fmt.Printf("  [!] No bundle installed yet\n")
+		fmt.Println()
+	}
+
+	// Check related events
+	if err := r.checkResourceEvents("ClusterExtension", name, ""); err != nil {
+		fmt.Printf("Events: Unable to fetch (%v)\n", err)
+	}
+
+	// Check operator-controller status
+	fmt.Printf("Operator Controller Status:\n")
+	operatorControllerNamespace, err := r.findOperatorControllerNamespace()
+	if err != nil {
+		fmt.Printf("  [!] Operator Controller not found: %v\n", err)
+	} else {
+		pods, err := r.k8sClient.CoreV1().Pods(operatorControllerNamespace).List(r.ctx, metav1.ListOptions{
+			LabelSelector: "app.kubernetes.io/name=operator-controller",
+		})
+		if err != nil {
+			fmt.Printf("  [!] Error checking operator-controller pods: %v\n", err)
+		} else if len(pods.Items) == 0 {
+			fmt.Printf("  [!] No operator-controller pods found in %s\n", operatorControllerNamespace)
+		} else {
+			readyPods := 0
+			for _, pod := range pods.Items {
+				for _, condition := range pod.Status.Conditions {
+					if condition.Type == "Ready" && condition.Status == "True" {
+						readyPods++
+						break
+					}
+				}
+			}
+			if readyPods == 0 {
+				fmt.Printf("  [!] Operator Controller pods exist but none are ready (%d pods in %s)\n", len(pods.Items), operatorControllerNamespace)
+			} else {
+				fmt.Printf("  [+] Operator Controller is healthy (%d/%d pods ready in %s)\n", readyPods, len(pods.Items), operatorControllerNamespace)
+			}
+		}
+	}
+
+
+	return nil
+}
+
+// checkResourceEvents fetches and displays recent events for a resource
+func (r *REPL) checkResourceEvents(kind, name, namespace string) error {
+	fmt.Printf("Recent Events:\n")
+
+	// Determine which namespace to search - use all namespaces for cluster-scoped resources
+	listOptions := metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("involvedObject.kind=%s,involvedObject.name=%s", kind, name),
+	}
+
+	var events *corev1.EventList
+	var err error
+
+	if namespace == "" {
+		// For cluster-scoped resources, we need to check all namespaces
+		// Start with common namespaces where OLM events might appear
+		checkNamespaces := []string{"default", "olmv1-system", "openshift-catalogd", "openshift-operator-lifecycle-manager"}
+		
+		for _, ns := range checkNamespaces {
+			events, err = r.k8sClient.CoreV1().Events(ns).List(r.ctx, listOptions)
+			if err == nil && len(events.Items) > 0 {
+				break
+			}
+		}
+		
+		// If no events found, try all namespaces (this is expensive but thorough)
+		if err != nil || len(events.Items) == 0 {
+			allNamespaces, nsErr := r.k8sClient.CoreV1().Namespaces().List(r.ctx, metav1.ListOptions{})
+			if nsErr == nil {
+				for _, ns := range allNamespaces.Items {
+					events, err = r.k8sClient.CoreV1().Events(ns.Name).List(r.ctx, listOptions)
+					if err == nil && len(events.Items) > 0 {
+						break
+					}
+				}
+			}
+		}
+	} else {
+		events, err = r.k8sClient.CoreV1().Events(namespace).List(r.ctx, listOptions)
+	}
+
+	if err != nil {
+		return err
+	}
+
+	if len(events.Items) == 0 {
+		fmt.Printf("  No recent events found\n")
+	} else {
+		// Sort events by last timestamp (most recent first)
+		eventItems := events.Items
+		for i := 0; i < len(eventItems)-1; i++ {
+			for j := i + 1; j < len(eventItems); j++ {
+				if eventItems[i].LastTimestamp.Before(&eventItems[j].LastTimestamp) {
+					eventItems[i], eventItems[j] = eventItems[j], eventItems[i]
+				}
+			}
+		}
+
+		// Show up to 10 most recent events
+		maxEvents := 10
+		if len(eventItems) < maxEvents {
+			maxEvents = len(eventItems)
+		}
+
+		for i := 0; i < maxEvents; i++ {
+			event := eventItems[i]
+			eventType := "[i]"
+			if event.Type == "Warning" {
+				eventType = "[?]"
+			} else if event.Type == "Error" {
+				eventType = "[!]"
+			}
+
+			fmt.Printf("  %s [%s] %s: %s\n", 
+				eventType,
+				event.LastTimestamp.Format("15:04:05"),
+				event.Reason,
+				event.Message,
+			)
+		}
+	}
+	fmt.Println()
 
 	return nil
 }
@@ -515,6 +828,28 @@ func (r *REPL) handleExtensionCommands(args []string) error {
 	}
 }
 
+// handleDiagnoseCommands processes diagnose-related commands
+func (r *REPL) handleDiagnoseCommands(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("diagnose command requires a subcommand. Use 'help' for more info")
+	}
+
+	switch args[0] {
+	case "catalog":
+		if len(args) < 2 {
+			return fmt.Errorf("'diagnose catalog' requires a catalog name")
+		}
+		return r.diagnoseCatalog(args[1])
+	case "extension":
+		if len(args) < 2 {
+			return fmt.Errorf("'diagnose extension' requires an extension name")
+		}
+		return r.diagnoseExtension(args[1])
+	default:
+		return fmt.Errorf("unknown diagnose command: %s. Available: catalog, extension", args[0])
+	}
+}
+
 // listCatalogs displays all ClusterCatalogs
 func (r *REPL) listCatalogs() error {
 	catalogs, err := r.olmClient.GetClusterCatalogs(r.ctx)
@@ -582,13 +917,36 @@ func (r *REPL) getCatalog(name string) error {
 	fmt.Printf("Created:         %s\n", catalog.CreationTimestamp.Format("2006-01-02 15:04:05"))
 
 	if len(catalog.Status.Conditions) > 0 {
-		fmt.Printf("\nConditions:\n")
+		fmt.Printf("\nStatus:\n")
+		hasFailures := false
 		for _, condition := range catalog.Status.Conditions {
-			fmt.Printf("  %s: %s (%s)\n", condition.Type, condition.Status, condition.Reason)
+			status := "[!]"
+			if condition.Status == "True" {
+				status = "[+]"
+			} else if condition.Status == "Unknown" {
+				status = "?"
+			} else {
+				hasFailures = true
+			}
+
+			fmt.Printf("  %s %s: %s", status, condition.Type, condition.Status)
+			if condition.Reason != "" {
+				fmt.Printf(" (%s)", condition.Reason)
+			}
+			fmt.Printf("\n")
+			
 			if condition.Message != "" {
 				fmt.Printf("    Message: %s\n", condition.Message)
 			}
 		}
+		
+		if hasFailures {
+			fmt.Printf("\nTIP: For detailed troubleshooting, run: diagnose catalog %s\n", name)
+		}
+	} else {
+		fmt.Printf("\nStatus:\n")
+		fmt.Printf("  [?] No status conditions found - catalog may be initializing\n")
+		fmt.Printf("\nTIP: For detailed troubleshooting, run: diagnose catalog %s\n", name)
 	}
 
 	return nil
@@ -881,13 +1239,36 @@ func (r *REPL) getExtension(name string) error {
 	}
 
 	if len(extension.Status.Conditions) > 0 {
-		fmt.Printf("\nConditions:\n")
+		fmt.Printf("\nStatus:\n")
+		hasFailures := false
 		for _, condition := range extension.Status.Conditions {
-			fmt.Printf("  %s: %s (%s)\n", condition.Type, condition.Status, condition.Reason)
+			status := "[!]"
+			if condition.Status == "True" {
+				status = "[+]"
+			} else if condition.Status == "Unknown" {
+				status = "?"
+			} else {
+				hasFailures = true
+			}
+
+			fmt.Printf("  %s %s: %s", status, condition.Type, condition.Status)
+			if condition.Reason != "" {
+				fmt.Printf(" (%s)", condition.Reason)
+			}
+			fmt.Printf("\n")
+			
 			if condition.Message != "" {
 				fmt.Printf("    Message: %s\n", condition.Message)
 			}
 		}
+		
+		if hasFailures {
+			fmt.Printf("\nTIP: For detailed troubleshooting, run: diagnose extension %s\n", name)
+		}
+	} else {
+		fmt.Printf("\nStatus:\n")
+		fmt.Printf("  [?] No status conditions found - extension may be initializing\n")
+		fmt.Printf("\nTIP: For detailed troubleshooting, run: diagnose extension %s\n", name)
 	}
 
 	return nil
