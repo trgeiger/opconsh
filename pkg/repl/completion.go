@@ -61,11 +61,27 @@ func (r *REPL) setupCompletion() *readline.PrefixCompleter {
 			readline.PcItem("get",
 				readline.PcItemDynamic(r.extensionNamesCompleter),
 			),
+			readline.PcItem("install-experimental",
+				readline.PcItemDynamic(r.catalogNamesCompleter,
+					readline.PcItemDynamic(r.packageNamesCompleter),
+				),
+			),
+			readline.PcItem("uninstall-experimental",
+				readline.PcItemDynamic(r.extensionNamesCompleter),
+			),
 		),
 		readline.PcItem("ext",
 			readline.PcItem("list"),
 			readline.PcItem("ls"),
 			readline.PcItem("get",
+				readline.PcItemDynamic(r.extensionNamesCompleter),
+			),
+			readline.PcItem("install-experimental",
+				readline.PcItemDynamic(r.catalogNamesCompleter,
+					readline.PcItemDynamic(r.packageNamesCompleter),
+				),
+			),
+			readline.PcItem("uninstall-experimental",
 				readline.PcItemDynamic(r.extensionNamesCompleter),
 			),
 		),
@@ -116,7 +132,7 @@ func (r *REPL) packageNamesCompleter(line string) []string {
 		return nil
 	}
 
-	catalogName := parts[2] // e.g., "catalogs package <catalogName> <packageName>"
+	catalogName := parts[2] // e.g., "catalogs package <catalogName> <packageName>" or "ext install-experimental <catalogName> <packageName>"
 
 	// Get the catalog to get its base URL
 	catalogs, err := r.cache.GetCatalogs(r)
@@ -136,6 +152,16 @@ func (r *REPL) packageNamesCompleter(line string) []string {
 
 	if catalogBaseURL == "" {
 		return nil
+	}
+
+	// Set up port forwarding if needed for package queries
+	if err := r.setupPortForwardIfNeeded(); err != nil {
+		return nil
+	}
+
+	// Use port-forwarded URL if available
+	if r.portForward != nil {
+		catalogBaseURL = r.portForward.GetLocalURL() + "/catalogs/" + catalogName
 	}
 
 	packages, err := r.cache.GetPackages(r, catalogName, catalogBaseURL)

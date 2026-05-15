@@ -16,6 +16,7 @@ import (
 
 	"github.com/operator-framework/opconsh/pkg/client"
 	"github.com/operator-framework/opconsh/pkg/portforward"
+	olmv1 "github.com/operator-framework/operator-controller/api/v1"
 )
 
 // REPL represents the interactive Read-Eval-Print-Loop
@@ -148,6 +149,8 @@ func (r *REPL) showHelp() error {
 	fmt.Println("  extensions, ext            Work with ClusterExtensions")
 	fmt.Println("    list                     List all ClusterExtensions")
 	fmt.Println("    get <name>              Get specific ClusterExtension details")
+	fmt.Println("    install-experimental     [⚠️ TESTING ONLY] Install extension with cluster-admin SA")
+	fmt.Println("    uninstall-experimental   [⚠️ TESTING ONLY] Uninstall extension and cleanup RBAC")
 	fmt.Println()
 	fmt.Println("  diagnose                   Troubleshoot OLM resources")
 	fmt.Println("    catalog <name>          Diagnose ClusterCatalog issues")
@@ -823,6 +826,16 @@ func (r *REPL) handleExtensionCommands(args []string) error {
 			return fmt.Errorf("'get' requires an extension name")
 		}
 		return r.getExtension(args[1])
+	case "install-experimental":
+		if len(args) < 3 {
+			return fmt.Errorf("'install-experimental' requires a catalog name and package name")
+		}
+		return r.installExtensionExperimental(args[1], args[2], args[3:])
+	case "uninstall-experimental":
+		if len(args) < 2 {
+			return fmt.Errorf("'uninstall-experimental' requires an extension name")
+		}
+		return r.uninstallExtensionExperimental(args[1], args[2:])
 	default:
 		return fmt.Errorf("unknown extension command: %s", args[0])
 	}
@@ -1269,6 +1282,295 @@ func (r *REPL) getExtension(name string) error {
 		fmt.Printf("\nStatus:\n")
 		fmt.Printf("  [?] No status conditions found - extension may be initializing\n")
 		fmt.Printf("\nTIP: For detailed troubleshooting, run: diagnose extension %s\n", name)
+	}
+
+	return nil
+}
+
+// installExtensionExperimental installs a ClusterExtension with cluster-admin ServiceAccount
+func (r *REPL) installExtensionExperimental(catalogName, packageName string, options []string) error {
+	// Parse options
+	namespace := "opconsh-test"
+	var version, channel, extensionName string
+	skipConfirmation := false
+
+	for i := 0; i < len(options); i++ {
+		switch options[i] {
+		case "--namespace":
+			if i+1 < len(options) {
+				namespace = options[i+1]
+				i++
+			}
+		case "--version":
+			if i+1 < len(options) {
+				version = options[i+1]
+				i++
+			}
+		case "--channel":
+			if i+1 < len(options) {
+				channel = options[i+1]
+				i++
+			}
+		case "--name":
+			if i+1 < len(options) {
+				extensionName = options[i+1]
+				i++
+			}
+		case "--yes":
+			skipConfirmation = true
+		}
+	}
+
+	// Default extension name
+	if extensionName == "" {
+		extensionName = packageName
+	}
+
+	// Display security warnings
+	fmt.Println()
+	fmt.Println("⚠️  EXPERIMENTAL COMMAND - TESTING ONLY ⚠️")
+	fmt.Println()
+	fmt.Println("This command creates a ServiceAccount with cluster-admin privileges.")
+	fmt.Println("This grants FULL CLUSTER ACCESS to the installed extension.")
+	fmt.Println()
+	fmt.Println("SECURITY RISKS:")
+	fmt.Println("• Extension has unrestricted access to all cluster resources")
+	fmt.Println("• Can read/modify secrets, RBAC, and sensitive data")
+	fmt.Println("• Suitable ONLY for testing and development")
+	fmt.Println()
+	fmt.Printf("Target namespace: %s\n", namespace)
+	fmt.Printf("Extension name: %s\n", extensionName)
+	fmt.Printf("Package: %s (from catalog: %s)\n", packageName, catalogName)
+	if version != "" {
+		fmt.Printf("Version: %s\n", version)
+	}
+	if channel != "" {
+		fmt.Printf("Channel: %s\n", channel)
+	}
+	fmt.Println()
+
+	// Confirmation prompt
+	if !skipConfirmation {
+		fmt.Print("Continue? (type 'yes' to confirm): ")
+		var response string
+		fmt.Scanln(&response)
+		if response != "yes" {
+			fmt.Println("Installation cancelled.")
+			return nil
+		}
+	}
+
+	// Pre-flight checks
+	fmt.Println("Performing pre-flight checks...")
+
+	// Check if catalog exists
+	_, err := r.olmClient.GetClusterCatalog(r.ctx, catalogName)
+	if err != nil {
+		return fmt.Errorf("catalog '%s' not found: %w", catalogName, err)
+	}
+	fmt.Printf("[+] Catalog '%s' exists\n", catalogName)
+
+	// Check if extension already exists
+	_, err = r.olmClient.GetClusterExtension(r.ctx, extensionName)
+	if err == nil {
+		return fmt.Errorf("ClusterExtension '%s' already exists", extensionName)
+	}
+	fmt.Printf("[+] Extension name '%s' is available\n", extensionName)
+
+	// Create resources
+	fmt.Println()
+	fmt.Println("Creating resources...")
+
+	// Create namespace if needed
+	if namespace != "default" {
+		fmt.Printf("[+] Creating namespace '%s'...\n", namespace)
+		if err := r.olmClient.CreateNamespace(r.ctx, namespace); err != nil {
+			return fmt.Errorf("failed to create namespace: %w", err)
+		}
+	}
+
+	// Create ServiceAccount
+	serviceAccountName := fmt.Sprintf("opconsh-%s", extensionName)
+	fmt.Printf("[+] Creating ServiceAccount '%s' in namespace '%s'...\n", serviceAccountName, namespace)
+	if err := r.olmClient.CreateServiceAccount(r.ctx, namespace, serviceAccountName); err != nil {
+		return fmt.Errorf("failed to create ServiceAccount: %w", err)
+	}
+
+	// Create ClusterRoleBinding
+	clusterRoleBindingName := fmt.Sprintf("opconsh-%s-cluster-admin", extensionName)
+	fmt.Printf("[+] Creating ClusterRoleBinding '%s' with cluster-admin privileges...\n", clusterRoleBindingName)
+	if err := r.olmClient.CreateClusterRoleBinding(r.ctx, clusterRoleBindingName, serviceAccountName, namespace); err != nil {
+		return fmt.Errorf("failed to create ClusterRoleBinding: %w", err)
+	}
+
+	// Create ClusterExtension
+	fmt.Printf("[+] Creating ClusterExtension '%s'...\n", extensionName)
+	extension := &olmv1.ClusterExtension{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: "olm.operatorframework.io/v1",
+			Kind:       "ClusterExtension",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name: extensionName,
+			Labels: map[string]string{
+				"created-by": "opconsh",
+				"purpose":    "experimental-install",
+			},
+		},
+		Spec: olmv1.ClusterExtensionSpec{
+			Namespace: namespace,
+			ServiceAccount: olmv1.ServiceAccountReference{
+				Name: serviceAccountName,
+			},
+			Source: olmv1.SourceConfig{
+				SourceType: "Catalog",
+				Catalog: &olmv1.CatalogFilter{
+					PackageName: packageName,
+				},
+			},
+		},
+	}
+
+	// Set version if specified
+	if version != "" {
+		extension.Spec.Source.Catalog.Version = version
+	}
+
+	// Set channel if specified
+	if channel != "" {
+		extension.Spec.Source.Catalog.Channels = []string{channel}
+	}
+
+	if err := r.olmClient.CreateClusterExtension(r.ctx, extension); err != nil {
+		return fmt.Errorf("failed to create ClusterExtension: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Println("✅ Experimental extension installation initiated!")
+	fmt.Println()
+	fmt.Printf("Monitor installation status with: extensions get %s\n", extensionName)
+	fmt.Printf("Diagnose any issues with: diagnose extension %s\n", extensionName)
+	fmt.Println()
+	fmt.Println("⚠️  REMEMBER: This extension has cluster-admin privileges!")
+
+	return nil
+}
+
+// uninstallExtensionExperimental uninstalls a ClusterExtension and cleans up associated RBAC resources
+func (r *REPL) uninstallExtensionExperimental(extensionName string, options []string) error {
+	// Parse options
+	cleanupRBAC := true
+	cleanupNamespace := true
+	skipConfirmation := false
+
+	for i := 0; i < len(options); i++ {
+		switch options[i] {
+		case "--keep-rbac":
+			cleanupRBAC = false
+		case "--keep-namespace":
+			cleanupNamespace = false
+		case "--yes":
+			skipConfirmation = true
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("⚠️  EXPERIMENTAL UNINSTALL ⚠️")
+	fmt.Println()
+
+	// Get the extension to show details and determine what was created
+	extension, err := r.olmClient.GetClusterExtension(r.ctx, extensionName)
+	if err != nil {
+		return fmt.Errorf("failed to get ClusterExtension '%s': %w", extensionName, err)
+	}
+
+	// Check if this was created by opconsh
+	if extension.Labels["created-by"] != "opconsh" || extension.Labels["purpose"] != "experimental-install" {
+		return fmt.Errorf("ClusterExtension '%s' was not created by opconsh experimental install", extensionName)
+	}
+
+	fmt.Printf("Extension: %s\n", extensionName)
+	if extension.Spec.Source.Catalog != nil {
+		fmt.Printf("Package: %s\n", extension.Spec.Source.Catalog.PackageName)
+	}
+	fmt.Printf("Namespace: %s\n", extension.Spec.Namespace)
+	if extension.Spec.ServiceAccount.Name != "" {
+		fmt.Printf("ServiceAccount: %s\n", extension.Spec.ServiceAccount.Name)
+	}
+	fmt.Println()
+
+	fmt.Println("This will remove:")
+	fmt.Printf("• ClusterExtension '%s'\n", extensionName)
+	
+	if cleanupRBAC && extension.Spec.ServiceAccount.Name != "" {
+		serviceAccountName := extension.Spec.ServiceAccount.Name
+		clusterRoleBindingName := fmt.Sprintf("opconsh-%s-cluster-admin", extensionName)
+		fmt.Printf("• ServiceAccount '%s' in namespace '%s'\n", serviceAccountName, extension.Spec.Namespace)
+		fmt.Printf("• ClusterRoleBinding '%s'\n", clusterRoleBindingName)
+		
+		if cleanupNamespace {
+			fmt.Printf("• Namespace '%s' (if empty and created by opconsh)\n", extension.Spec.Namespace)
+		}
+	}
+	fmt.Println()
+
+	// Confirmation prompt
+	if !skipConfirmation {
+		fmt.Print("Continue with uninstall? (type 'yes' to confirm): ")
+		var response string
+		fmt.Scanln(&response)
+		if response != "yes" {
+			fmt.Println("Uninstall cancelled.")
+			return nil
+		}
+	}
+
+	// Perform uninstall
+	fmt.Println("Removing resources...")
+
+	// Delete the ClusterExtension first
+	fmt.Printf("[+] Removing ClusterExtension '%s'...\n", extensionName)
+	if err := r.olmClient.DeleteClusterExtension(r.ctx, extensionName); err != nil {
+		return fmt.Errorf("failed to delete ClusterExtension: %w", err)
+	}
+
+	if cleanupRBAC && extension.Spec.ServiceAccount.Name != "" {
+		serviceAccountName := extension.Spec.ServiceAccount.Name
+		namespace := extension.Spec.Namespace
+		clusterRoleBindingName := fmt.Sprintf("opconsh-%s-cluster-admin", extensionName)
+
+		// Delete ClusterRoleBinding
+		fmt.Printf("[+] Removing ClusterRoleBinding '%s'...\n", clusterRoleBindingName)
+		if err := r.olmClient.DeleteClusterRoleBinding(r.ctx, clusterRoleBindingName); err != nil {
+			fmt.Printf("Warning: Failed to delete ClusterRoleBinding: %v\n", err)
+		}
+
+		// Delete ServiceAccount
+		fmt.Printf("[+] Removing ServiceAccount '%s'...\n", serviceAccountName)
+		if err := r.olmClient.DeleteServiceAccount(r.ctx, namespace, serviceAccountName); err != nil {
+			fmt.Printf("Warning: Failed to delete ServiceAccount: %v\n", err)
+		}
+
+		// Optionally delete namespace if empty
+		if cleanupNamespace && namespace != "default" {
+			fmt.Printf("[+] Checking if namespace '%s' can be removed...\n", namespace)
+			if err := r.olmClient.DeleteNamespaceIfEmpty(r.ctx, namespace); err != nil {
+				fmt.Printf("Note: Namespace '%s' not removed: %v\n", namespace, err)
+			} else {
+				fmt.Printf("[+] Namespace '%s' removed\n", namespace)
+			}
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("✅ Experimental extension uninstall completed!")
+	fmt.Println()
+
+	if cleanupRBAC {
+		fmt.Printf("Use 'extensions list' to verify the extension was removed\n")
+	} else {
+		fmt.Printf("Note: RBAC resources were kept as requested\n")
+		fmt.Printf("Use 'extensions list' to verify the extension was removed\n")
 	}
 
 	return nil

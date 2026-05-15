@@ -174,6 +174,16 @@ func (ctx *CatalogContext) processCommand(input string) error {
 			channel = args[1]
 		}
 		return ctx.listVersions(args[0], channel)
+	case "install-experimental":
+		if len(args) < 1 {
+			return fmt.Errorf("'install-experimental' requires a package name")
+		}
+		return ctx.installPackageExperimental(args[0], args[1:])
+	case "uninstall-experimental":
+		if len(args) < 1 {
+			return fmt.Errorf("'uninstall-experimental' requires an extension name")
+		}
+		return ctx.uninstallExtensionExperimental(args[0], args[1:])
 	default:
 		return fmt.Errorf("unknown command: %s. Type 'help' for available commands", command)
 	}
@@ -193,6 +203,10 @@ func (ctx *CatalogContext) showCatalogHelp() error {
 	fmt.Println("  channels <name>            List all channels for a package")
 	fmt.Println("  bundles <name> [channel]   List all bundles for a package (or specific channel)")
 	fmt.Println("  versions <name> [channel]  List all versions for a package (or specific channel)")
+	fmt.Println()
+	fmt.Println("  Installation:")
+	fmt.Println("  install-experimental <pkg>   [⚠️ TESTING ONLY] Install extension with cluster-admin SA")
+	fmt.Println("  uninstall-experimental <ext> [⚠️ TESTING ONLY] Uninstall extension and cleanup RBAC")
 	fmt.Println()
 	fmt.Println("  Other commands:")
 	fmt.Println("  info                       Show catalog information")
@@ -447,6 +461,12 @@ func (ctx *CatalogContext) setupCatalogCompletion() *readline.PrefixCompleter {
 		readline.PcItem("bundles",
 			readline.PcItemDynamic(ctx.packageNamesCompleter),
 		),
+		readline.PcItem("install-experimental",
+			readline.PcItemDynamic(ctx.packageNamesCompleter),
+		),
+		readline.PcItem("uninstall-experimental",
+			readline.PcItemDynamic(ctx.extensionNamesCompleter),
+		),
 		readline.PcItem("info"),
 		readline.PcItem("refresh"),
 		readline.PcItem("clear"),
@@ -467,6 +487,12 @@ func (ctx *CatalogContext) packageNamesCompleter(line string) []string {
 		names = append(names, pkg.Name)
 	}
 	return names
+}
+
+// extensionNamesCompleter provides tab completion for extension names
+func (ctx *CatalogContext) extensionNamesCompleter(line string) []string {
+	// Use the main REPL's extension completer
+	return ctx.repl.extensionNamesCompleter(line)
 }
 
 // getChannelNames returns channel names for a specific package
@@ -897,4 +923,16 @@ func compareSemanticVersions(v1, v2 *semanticVersion) int {
 	}
 
 	return 0
+}
+
+// installPackageExperimental installs a ClusterExtension with cluster-admin ServiceAccount from within catalog context
+func (ctx *CatalogContext) installPackageExperimental(packageName string, options []string) error {
+	// Call the main REPL's install method with the current catalog name
+	return ctx.repl.installExtensionExperimental(ctx.catalog.Name, packageName, options)
+}
+
+// uninstallExtensionExperimental uninstalls a ClusterExtension from within catalog context
+func (ctx *CatalogContext) uninstallExtensionExperimental(extensionName string, options []string) error {
+	// Call the main REPL's uninstall method
+	return ctx.repl.uninstallExtensionExperimental(extensionName, options)
 }
