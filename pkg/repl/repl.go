@@ -827,13 +827,25 @@ func (r *REPL) handleExtensionCommands(args []string) error {
 		}
 		return r.getExtension(args[1])
 	case "install-experimental":
+		// Check for help first
+		if len(args) >= 2 && (args[1] == "--help" || args[1] == "-h" || args[1] == "help") {
+			return r.showInstallHelp()
+		}
 		if len(args) < 3 {
-			return fmt.Errorf("'install-experimental' requires a catalog name and package name")
+			fmt.Println("Error: 'install-experimental' requires a catalog name and package name")
+			fmt.Println()
+			return r.showInstallHelp()
 		}
 		return r.installExtensionExperimental(args[1], args[2], args[3:])
 	case "uninstall-experimental":
+		// Check for help first
+		if len(args) >= 2 && (args[1] == "--help" || args[1] == "-h" || args[1] == "help") {
+			return r.showUninstallHelp()
+		}
 		if len(args) < 2 {
-			return fmt.Errorf("'uninstall-experimental' requires an extension name")
+			fmt.Println("Error: 'uninstall-experimental' requires an extension name")
+			fmt.Println()
+			return r.showUninstallHelp()
 		}
 		return r.uninstallExtensionExperimental(args[1], args[2:])
 	default:
@@ -1296,6 +1308,8 @@ func (r *REPL) installExtensionExperimental(catalogName, packageName string, opt
 
 	for i := 0; i < len(options); i++ {
 		switch options[i] {
+		case "--help", "-h", "help":
+			return r.showInstallHelp()
 		case "--namespace":
 			if i+1 < len(options) {
 				namespace = options[i+1]
@@ -1456,6 +1470,40 @@ func (r *REPL) installExtensionExperimental(catalogName, packageName string, opt
 	return nil
 }
 
+// showInstallHelp displays help for the install-experimental command
+func (r *REPL) showInstallHelp() error {
+	fmt.Println("install-experimental - Install a ClusterExtension with cluster-admin privileges")
+	fmt.Println()
+	fmt.Println("⚠️  WARNING: This is for TESTING ONLY and grants full cluster access!")
+	fmt.Println()
+	fmt.Println("Usage:")
+	fmt.Println("  extensions install-experimental <catalog> <package> [options]")
+	fmt.Println("  ext install-experimental <catalog> <package> [options]")
+	fmt.Println()
+	fmt.Println("Examples:")
+	fmt.Println("  ext install-experimental operatorhubio prometheus-operator")
+	fmt.Println("  ext install-experimental operatorhubio grafana-operator --namespace monitoring --name my-grafana")
+	fmt.Println("  ext install-experimental operatorhubio prometheus-operator --version 0.68.0 --channel stable --yes")
+	fmt.Println()
+	fmt.Println("Options:")
+	fmt.Println("  --namespace <name>    Target namespace for extension (default: opconsh-test)")
+	fmt.Println("  --name <name>         Custom name for ClusterExtension (default: package name)")
+	fmt.Println("  --version <version>   Specific version to install")
+	fmt.Println("  --channel <channel>   Specific channel to use")
+	fmt.Println("  --yes                 Skip confirmation prompt")
+	fmt.Println("  --help, -h, help      Show this help message")
+	fmt.Println()
+	fmt.Println("Security Notice:")
+	fmt.Println("This command creates:")
+	fmt.Println("• A ClusterExtension in the specified namespace")
+	fmt.Println("• A ServiceAccount with cluster-admin ClusterRoleBinding")
+	fmt.Println("• Grants UNRESTRICTED access to ALL cluster resources")
+	fmt.Println()
+	fmt.Println("Use 'uninstall-experimental <extension-name>' to remove the extension and cleanup.")
+	fmt.Println()
+	return nil
+}
+
 // uninstallExtensionExperimental uninstalls a ClusterExtension and cleans up associated RBAC resources
 func (r *REPL) uninstallExtensionExperimental(extensionName string, options []string) error {
 	// Parse options
@@ -1465,6 +1513,8 @@ func (r *REPL) uninstallExtensionExperimental(extensionName string, options []st
 
 	for i := 0; i < len(options); i++ {
 		switch options[i] {
+		case "--help", "-h", "help":
+			return r.showUninstallHelp()
 		case "--keep-rbac":
 			cleanupRBAC = false
 		case "--keep-namespace":
@@ -1573,5 +1623,40 @@ func (r *REPL) uninstallExtensionExperimental(extensionName string, options []st
 		fmt.Printf("Use 'extensions list' to verify the extension was removed\n")
 	}
 
+	return nil
+}
+
+// showUninstallHelp displays help for the uninstall-experimental command
+func (r *REPL) showUninstallHelp() error {
+	fmt.Println("uninstall-experimental - Remove a ClusterExtension and cleanup associated resources")
+	fmt.Println()
+	fmt.Println("⚠️  WARNING: This command permanently removes extensions!")
+	fmt.Println()
+	fmt.Println("Usage:")
+	fmt.Println("  extensions uninstall-experimental <extension-name> [options]")
+	fmt.Println("  ext uninstall-experimental <extension-name> [options]")
+	fmt.Println()
+	fmt.Println("Examples:")
+	fmt.Println("  ext uninstall-experimental prometheus-operator")
+	fmt.Println("  ext uninstall-experimental grafana-operator --keep-namespace")
+	fmt.Println("  ext uninstall-experimental my-extension --keep-rbac --yes")
+	fmt.Println()
+	fmt.Println("Options:")
+	fmt.Println("  --keep-rbac         Keep ServiceAccount and ClusterRoleBinding (default: remove)")
+	fmt.Println("  --keep-namespace    Keep namespace even if empty (default: remove if empty)")
+	fmt.Println("  --yes               Skip confirmation prompt")
+	fmt.Println("  --help, -h, help    Show this help message")
+	fmt.Println()
+	fmt.Println("What gets removed:")
+	fmt.Println("• ClusterExtension resource (always removed)")
+	fmt.Println("• ServiceAccount created by opconsh (unless --keep-rbac)")
+	fmt.Println("• ClusterRoleBinding created by opconsh (unless --keep-rbac)")
+	fmt.Println("• Namespace if empty and created by opconsh (unless --keep-namespace)")
+	fmt.Println()
+	fmt.Println("Safety Features:")
+	fmt.Println("• Only removes resources with 'created-by: opconsh' labels")
+	fmt.Println("• Won't delete namespaces that contain other resources")
+	fmt.Println("• Requires confirmation unless --yes is used")
+	fmt.Println()
 	return nil
 }

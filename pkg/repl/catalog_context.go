@@ -175,13 +175,25 @@ func (ctx *CatalogContext) processCommand(input string) error {
 		}
 		return ctx.listVersions(args[0], channel)
 	case "install-experimental":
+		// Check for help first
+		if len(args) >= 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+			return ctx.repl.showInstallHelp()
+		}
 		if len(args) < 1 {
-			return fmt.Errorf("'install-experimental' requires a package name")
+			fmt.Println("Error: 'install-experimental' requires a package name")
+			fmt.Println()
+			return ctx.repl.showInstallHelp()
 		}
 		return ctx.installPackageExperimental(args[0], args[1:])
 	case "uninstall-experimental":
+		// Check for help first
+		if len(args) >= 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
+			return ctx.repl.showUninstallHelp()
+		}
 		if len(args) < 1 {
-			return fmt.Errorf("'uninstall-experimental' requires an extension name")
+			fmt.Println("Error: 'uninstall-experimental' requires an extension name")
+			fmt.Println()
+			return ctx.repl.showUninstallHelp()
 		}
 		return ctx.uninstallExtensionExperimental(args[0], args[1:])
 	default:
@@ -463,9 +475,23 @@ func (ctx *CatalogContext) setupCatalogCompletion() *readline.PrefixCompleter {
 		),
 		readline.PcItem("install-experimental",
 			readline.PcItemDynamic(ctx.packageNamesCompleter),
+			readline.PcItem("--help"),
+			readline.PcItem("-h"),
+			readline.PcItem("help"),
+			readline.PcItem("--namespace"),
+			readline.PcItem("--name"),
+			readline.PcItem("--version"),
+			readline.PcItem("--channel"),
+			readline.PcItem("--yes"),
 		),
 		readline.PcItem("uninstall-experimental",
 			readline.PcItemDynamic(ctx.extensionNamesCompleter),
+			readline.PcItem("--help"),
+			readline.PcItem("-h"),
+			readline.PcItem("help"),
+			readline.PcItem("--keep-rbac"),
+			readline.PcItem("--keep-namespace"),
+			readline.PcItem("--yes"),
 		),
 		readline.PcItem("info"),
 		readline.PcItem("refresh"),
