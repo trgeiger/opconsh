@@ -8,8 +8,10 @@ import (
 	"time"
 
 	"github.com/chzyer/readline"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/operator-framework/opconsh/pkg/client"
 	"github.com/operator-framework/opconsh/pkg/portforward"
@@ -21,18 +23,20 @@ type REPL struct {
 	olmClient      *client.OLMClient
 	catalogdClient *client.CatalogdClient
 	config         *rest.Config
+	kubeConfig     clientcmd.ClientConfig
 	ctx            context.Context
 	cache          *Cache
 	portForward    *portforward.PortForwarder // For non-interactive package commands
 }
 
 // New creates a new REPL instance
-func New(k8sClient *kubernetes.Clientset, olmClient *client.OLMClient, catalogdClient *client.CatalogdClient, config *rest.Config) *REPL {
+func New(k8sClient *kubernetes.Clientset, olmClient *client.OLMClient, catalogdClient *client.CatalogdClient, config *rest.Config, kubeConfig clientcmd.ClientConfig) *REPL {
 	return &REPL{
 		k8sClient:      k8sClient,
 		olmClient:      olmClient,
 		catalogdClient: catalogdClient,
 		config:         config,
+		kubeConfig:     kubeConfig,
 		ctx:            context.Background(),
 		cache:          NewCache(30 * time.Second), // 30 second cache TTL
 	}
@@ -142,7 +146,7 @@ func (r *REPL) showHelp() error {
 	fmt.Println("    list                     List all ClusterExtensions")
 	fmt.Println("    get <name>              Get specific ClusterExtension details")
 	fmt.Println()
-	fmt.Println("  status                     Show cluster and connection status")
+	fmt.Println("  status                     Show detailed cluster connection and OLM status")
 	fmt.Println("  refresh                    Refresh cached completion data")
 	fmt.Println("  clear                      Clear the screen")
 	fmt.Println("  exit, quit                 Exit opconsh")
@@ -150,35 +154,298 @@ func (r *REPL) showHelp() error {
 	return nil
 }
 
-// showStatus displays cluster connection and OLM status
+// showStatus displays detailed cluster connection and OLM status
 func (r *REPL) showStatus() error {
-	fmt.Println("Cluster Status:")
+	fmt.Println("Cluster Connection Status:")
 
-	// Check cluster connection
+	// Get kubeconfig context information
+	rawConfig, err := r.kubeConfig.RawConfig()
+	if err != nil {
+		fmt.Printf("  ✗ Kubeconfig: Unable to read config (%v)\n", err)
+	} else {
+		currentContext := rawConfig.CurrentContext
+		if currentContext == "" {
+			currentContext = "default"
+		}
+
+		// Get kubeconfig file path
+		configAccess := r.kubeConfig.ConfigAccess()
+		kubeconfigPath := "in-cluster"
+		if configAccess != nil {
+			if paths := configAccess.GetLoadingPrecedence(); len(paths) > 0 {
+				kubeconfigPath = paths[0]
+			}
+		}
+
+		fmt.Printf("  ✓ Kubeconfig: %s (context: %s)\n", kubeconfigPath, currentContext)
+
+		// Show current namespace if set
+		namespace, _, err := r.kubeConfig.Namespace()
+		if err == nil && namespace != "" {
+			fmt.Printf("  ✓ Namespace: %s\n", namespace)
+		}
+	}
+
+	// Check API server connectivity and version
 	version, err := r.k8sClient.Discovery().ServerVersion()
 	if err != nil {
-		return fmt.Errorf("failed to connect to cluster: %w", err)
+		fmt.Printf("  ✗ API Server: Failed to connect (%v)\n", err)
+		return err
 	}
 
-	fmt.Printf("  Connected to Kubernetes %s\n", version.GitVersion)
+	fmt.Printf("  ✓ API Server: %s (Kubernetes %s)\n", r.config.Host, version.GitVersion)
 
-	// Check if ClusterCatalogs are available
+	// Test user permissions by trying to list namespaces
+	namespaces, err := r.k8sClient.CoreV1().Namespaces().List(r.ctx, metav1.ListOptions{Limit: 1})
+	if err != nil {
+		fmt.Printf("  ⚠ Permissions: Limited access (%v)\n", err)
+	} else {
+		fmt.Printf("  ✓ Permissions: Can list cluster resources (%d namespaces)\n", len(namespaces.Items))
+	}
+
+	fmt.Println()
+	fmt.Println("OLM Status:")
+
+	// Check catalogd availability
+	catalogdNamespace, err := r.findCatalogdNamespace()
+	if err != nil {
+		fmt.Printf("  ✗ Catalogd: Not found (%v)\n", err)
+	} else {
+		// Check catalogd pods
+		pods, err := r.k8sClient.CoreV1().Pods(catalogdNamespace).List(r.ctx, metav1.ListOptions{
+			LabelSelector: "app.kubernetes.io/name=catalogd",
+		})
+		if err != nil {
+			fmt.Printf("  ✗ Catalogd: Error checking pods in %s (%v)\n", catalogdNamespace, err)
+		} else if len(pods.Items) == 0 {
+			fmt.Printf("  ✗ Catalogd: No pods found in %s\n", catalogdNamespace)
+		} else {
+			readyPods := 0
+			for _, pod := range pods.Items {
+				for _, condition := range pod.Status.Conditions {
+					if condition.Type == "Ready" && condition.Status == "True" {
+						readyPods++
+						break
+					}
+				}
+			}
+			if readyPods == 0 {
+				fmt.Printf("  ⚠ Catalogd: %d pod(s) in %s, none ready\n", len(pods.Items), catalogdNamespace)
+			} else {
+				fmt.Printf("  ✓ Catalogd: %d/%d pod(s) ready in %s\n", readyPods, len(pods.Items), catalogdNamespace)
+			}
+		}
+	}
+
+	// Check operator-controller availability
+	operatorControllerNamespace, err := r.findOperatorControllerNamespace()
+	if err != nil {
+		fmt.Printf("  ✗ Operator Controller: Not found (%v)\n", err)
+	} else {
+		// Check operator-controller pods
+		pods, err := r.k8sClient.CoreV1().Pods(operatorControllerNamespace).List(r.ctx, metav1.ListOptions{
+			LabelSelector: "app.kubernetes.io/name=operator-controller",
+		})
+		if err != nil {
+			fmt.Printf("  ✗ Operator Controller: Error checking pods in %s (%v)\n", operatorControllerNamespace, err)
+		} else if len(pods.Items) == 0 {
+			fmt.Printf("  ✗ Operator Controller: No pods found in %s\n", operatorControllerNamespace)
+		} else {
+			readyPods := 0
+			for _, pod := range pods.Items {
+				for _, condition := range pod.Status.Conditions {
+					if condition.Type == "Ready" && condition.Status == "True" {
+						readyPods++
+						break
+					}
+				}
+			}
+			if readyPods == 0 {
+				fmt.Printf("  ⚠ Operator Controller: %d pod(s) in %s, none ready\n", len(pods.Items), operatorControllerNamespace)
+			} else {
+				fmt.Printf("  ✓ Operator Controller: %d/%d pod(s) ready in %s\n", readyPods, len(pods.Items), operatorControllerNamespace)
+			}
+		}
+	}
+
+	// Check ClusterCatalogs with detailed error reporting
 	catalogs, err := r.olmClient.GetClusterCatalogs(r.ctx)
 	if err != nil {
-		fmt.Printf("  Error accessing ClusterCatalogs: %v\n", err)
+		fmt.Printf("  ✗ ClusterCatalogs: Unable to access (%v)\n", err)
 	} else {
-		fmt.Printf("  %d ClusterCatalog(s) available\n", len(catalogs))
+		availableCount := 0
+		errorCount := 0
+		for _, catalog := range catalogs {
+			isAvailable := false
+			for _, condition := range catalog.Status.Conditions {
+				if condition.Type == "Serving" && condition.Status == "True" {
+					isAvailable = true
+					break
+				}
+			}
+			if isAvailable {
+				availableCount++
+			} else {
+				errorCount++
+			}
+		}
+
+		if errorCount > 0 {
+			fmt.Printf("  ⚠ ClusterCatalogs: %d available, %d with errors\n", availableCount, errorCount)
+		} else {
+			fmt.Printf("  ✓ ClusterCatalogs: %d available\n", len(catalogs))
+		}
 	}
 
-	// Check if ClusterExtensions are available
+	// Check ClusterExtensions with detailed status
 	extensions, err := r.olmClient.GetClusterExtensions(r.ctx)
 	if err != nil {
-		fmt.Printf("  Error accessing ClusterExtensions: %v\n", err)
+		fmt.Printf("  ✗ ClusterExtensions: Unable to access (%v)\n", err)
 	} else {
-		fmt.Printf("  %d ClusterExtension(s) installed\n", len(extensions))
+		installedCount := 0
+		failedCount := 0
+		for _, extension := range extensions {
+			isInstalled := false
+			for _, condition := range extension.Status.Conditions {
+				if condition.Type == "Installed" {
+					if condition.Status == "True" {
+						isInstalled = true
+					} else {
+						failedCount++
+					}
+					break
+				}
+			}
+			if isInstalled {
+				installedCount++
+			}
+		}
+
+		if failedCount > 0 {
+			fmt.Printf("  ⚠ ClusterExtensions: %d installed, %d failed\n", installedCount, failedCount)
+		} else {
+			fmt.Printf("  ✓ ClusterExtensions: %d installed\n", len(extensions))
+		}
 	}
 
 	return nil
+}
+
+// findCatalogdNamespace searches for the namespace containing catalogd deployment
+// This is a copy of the logic from portforward package to avoid dependency issues
+func (r *REPL) findCatalogdNamespace() (string, error) {
+	// Common catalogd namespaces to check, in order of preference
+	candidateNamespaces := []string{
+		"openshift-catalogd",         // OpenShift default
+		"olmv1-system",               // Upstream default
+		"operator-lifecycle-manager", // Alternative
+	}
+
+	// First, try the common namespaces
+	for _, ns := range candidateNamespaces {
+		pods, err := r.k8sClient.CoreV1().Pods(ns).List(r.ctx, metav1.ListOptions{
+			LabelSelector: "app.kubernetes.io/name=catalogd",
+		})
+		if err != nil {
+			// Namespace might not exist, continue checking
+			continue
+		}
+
+		if len(pods.Items) > 0 {
+			return ns, nil
+		}
+	}
+
+	// If not found in common namespaces, search all namespaces
+	namespaces, err := r.k8sClient.CoreV1().Namespaces().List(r.ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to list namespaces: %w", err)
+	}
+
+	for _, ns := range namespaces.Items {
+		// Skip namespaces we already checked
+		skip := false
+		for _, candidate := range candidateNamespaces {
+			if ns.Name == candidate {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+
+		pods, err := r.k8sClient.CoreV1().Pods(ns.Name).List(r.ctx, metav1.ListOptions{
+			LabelSelector: "app.kubernetes.io/name=catalogd",
+		})
+		if err != nil {
+			continue
+		}
+
+		if len(pods.Items) > 0 {
+			return ns.Name, nil
+		}
+	}
+
+	return "", fmt.Errorf("no catalogd pods found in any namespace")
+}
+
+// findOperatorControllerNamespace searches for the namespace containing operator-controller deployment
+func (r *REPL) findOperatorControllerNamespace() (string, error) {
+	// Common operator-controller namespaces to check, in order of preference
+	candidateNamespaces := []string{
+		"openshift-operator-lifecycle-manager", // OpenShift default
+		"olmv1-system",                         // Upstream default
+		"operator-lifecycle-manager",           // Alternative
+	}
+
+	// First, try the common namespaces
+	for _, ns := range candidateNamespaces {
+		pods, err := r.k8sClient.CoreV1().Pods(ns).List(r.ctx, metav1.ListOptions{
+			LabelSelector: "app.kubernetes.io/name=operator-controller",
+		})
+		if err != nil {
+			// Namespace might not exist, continue checking
+			continue
+		}
+
+		if len(pods.Items) > 0 {
+			return ns, nil
+		}
+	}
+
+	// If not found in common namespaces, search all namespaces
+	namespaces, err := r.k8sClient.CoreV1().Namespaces().List(r.ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to list namespaces: %w", err)
+	}
+
+	for _, ns := range namespaces.Items {
+		// Skip namespaces we already checked
+		skip := false
+		for _, candidate := range candidateNamespaces {
+			if ns.Name == candidate {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+
+		pods, err := r.k8sClient.CoreV1().Pods(ns.Name).List(r.ctx, metav1.ListOptions{
+			LabelSelector: "app.kubernetes.io/name=operator-controller",
+		})
+		if err != nil {
+			continue
+		}
+
+		if len(pods.Items) > 0 {
+			return ns.Name, nil
+		}
+	}
+
+	return "", fmt.Errorf("no operator-controller pods found in any namespace")
 }
 
 // refreshCache invalidates all cached data and forces fresh fetches
@@ -352,7 +619,7 @@ func (r *REPL) CleanupPortForward() {
 func (r *REPL) listPackagesInCatalog(catalogName string) error {
 	fmt.Printf("Packages in catalog '%s':\n", catalogName)
 	fmt.Println("Querying catalogd service...")
-	
+
 	// Set up port forwarding if needed for non-interactive use
 	if err := r.setupPortForwardIfNeeded(); err != nil {
 		return err
@@ -418,7 +685,7 @@ func (r *REPL) listPackagesInCatalog(catalogName string) error {
 func (r *REPL) getPackageDetails(catalogName, packageName string) error {
 	fmt.Printf("Package details for '%s' in catalog '%s':\n", packageName, catalogName)
 	fmt.Println("Querying catalogd service...")
-	
+
 	// Set up port forwarding if needed for non-interactive use
 	if err := r.setupPortForwardIfNeeded(); err != nil {
 		return err
@@ -468,7 +735,7 @@ func (r *REPL) getPackageDetails(catalogName, packageName string) error {
 func (r *REPL) searchPackages(catalogName, searchTerm string) error {
 	fmt.Printf("Searching for '%s' in catalog '%s':\n", searchTerm, catalogName)
 	fmt.Println("Querying catalogd service...")
-	
+
 	// Set up port forwarding if needed for non-interactive use
 	if err := r.setupPortForwardIfNeeded(); err != nil {
 		return err

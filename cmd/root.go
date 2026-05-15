@@ -80,11 +80,11 @@ func executeCommand(args []string) error {
 	}
 
 	// Create a REPL instance for command processing but don't start interactive mode
-	r := repl.New(k8sClient, olmClient, catalogdClient, config)
-	
+	r := repl.New(k8sClient, olmClient, catalogdClient, config, kubeConfig)
+
 	// Ensure cleanup of any port forwarding when done
 	defer r.CleanupPortForward()
-	
+
 	// Join args into a single command string and process it
 	commandStr := strings.Join(args, " ")
 	return r.ProcessCommand(commandStr)
@@ -122,6 +122,6 @@ func startREPL() error {
 	}
 
 	// Start REPL
-	r := repl.New(k8sClient, olmClient, catalogdClient, config)
+	r := repl.New(k8sClient, olmClient, catalogdClient, config, kubeConfig)
 	return r.Start()
 }

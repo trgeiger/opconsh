@@ -755,7 +755,6 @@ func (ctx *CatalogContext) listVersions(packageName, channelFilter string) error
 	return nil
 }
 
-
 // showBundle shows detailed information about a specific bundle
 func (ctx *CatalogContext) showBundle(packageName, version string) error {
 	if err := ctx.ensurePackagesLoaded(); err != nil {
